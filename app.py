@@ -1,12 +1,8 @@
 # Update 1
-from flask import Flask, jsonify, request
 import os
-
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import db
-from dotenv import load_dotenv
-
-load_dotenv()
 
 db_conn = db.get_db_connection(os.getenv('DB_NAME'), os.getenv('DB_USERNAME'), os.getenv('DB_PASSWORD'), os.getenv('DB_HOST'), os.getenv('DB_PORT'))
 
