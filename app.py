@@ -2,19 +2,35 @@
 import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import db
+from psycopg2 import pool
 
-db_conn = db.get_db_connection(os.getenv('DB_NAME'), os.getenv('DB_USERNAME'), os.getenv('DB_PASSWORD'), os.getenv('DB_HOST'), os.getenv('DB_PORT'))
+# Initialize connection pool
+# Using smaller pool size to avoid OOM issues on Cloud Run
+try:
+    db_pool = pool.SimpleConnectionPool(
+        1,  # minconn
+        3,  # maxconn - reduced for Cloud Run memory constraints
+        dbname=os.getenv('DB_NAME'),
+        user=os.getenv('DB_USERNAME'),
+        password=os.getenv('DB_PASSWORD'),
+        host=os.getenv('DB_HOST'),
+        port=os.getenv('DB_PORT')
+    )
+except Exception as e:
+    print(f"Error creating connection pool: {e}")
+    db_pool = None
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": ["http://localhost:4000"]}})
 
 @app.route('/login', methods=['POST'])
 def login_user_account():
-    if db_conn is None:
-        return jsonify({'status':'fail', 'message': 'Database connection failed'}), 500
+    if db_pool is None:
+        return jsonify({'status':'fail', 'message': 'Database connection pool not available'}), 500
     
+    conn = None
     try:
+        conn = db_pool.getconn()
         data = request.get_json()
         username = data.get('username')
         password = data.get('password')
@@ -22,7 +38,7 @@ def login_user_account():
         if not username or not password:
             return jsonify({'status':'fail', 'message': 'username and password are required'}), 400
         
-        cursor = db_conn.cursor()
+        cursor = conn.cursor()
         cursor.execute(
             "SELECT password, failed_attempts FROM user_account WHERE LOWER(username) = LOWER(%s)",
             (username,)
@@ -31,6 +47,7 @@ def login_user_account():
         
         if result is None:
             cursor.close()
+            db_pool.putconn(conn)
             return jsonify({'status':'fail', 'message': 'Invalid username or password'}), 401
         
         stored_password, failed_attempts = result
@@ -40,8 +57,9 @@ def login_user_account():
                 "UPDATE user_account SET failed_attempts = 0 WHERE LOWER(username) = LOWER(%s)",
                 (username,)
             )
-            db_conn.commit()
+            conn.commit()
             cursor.close()
+            db_pool.putconn(conn)
             return jsonify({'status':'success', 'message': 'Login successful'}), 200
         else:
             failed_attempts += 1
@@ -49,20 +67,25 @@ def login_user_account():
                 "UPDATE user_account SET failed_attempts = %s WHERE LOWER(username) = LOWER(%s)",
                 (failed_attempts, username)
             )
-            db_conn.commit()
+            conn.commit()
             cursor.close()
+            db_pool.putconn(conn)
             return jsonify({'status':'fail', 'message': 'Invalid username or password'}), 401
     except Exception as e:
         print(f"{str(e)}")
-        db_conn.rollback()
+        if conn:
+            conn.rollback()
+            db_pool.putconn(conn)
         return jsonify({'status':'fail', 'message': str(e)}), 500
 
 @app.route('/user-account/reset-password', methods=['PUT'])
 def reset_user_account_password():
-    if db_conn is None:
-        return jsonify({'status':'fail', 'message': 'Database connection failed'}), 500
+    if db_pool is None:
+        return jsonify({'status':'fail', 'message': 'Database connection pool not available'}), 500
     
+    conn = None
     try:
+        conn = db_pool.getconn()
         data = request.get_json()
         username = data.get('username')
         new_password = data.get('new_password')
@@ -70,22 +93,26 @@ def reset_user_account_password():
         if not username or not new_password:
             return jsonify({'status':'fail', 'message': 'username and new_password are required'}), 400
         
-        cursor = db_conn.cursor()
+        cursor = conn.cursor()
         cursor.execute(
             "UPDATE user_account SET password = %s, failed_attempts = 0 WHERE LOWER(username) = LOWER(%s)",
             (new_password, username)
         )
-        db_conn.commit()
+        conn.commit()
         
         if cursor.rowcount == 0:
             cursor.close()
+            db_pool.putconn(conn)
             return jsonify({'status':'fail', 'message': 'User not found'}), 404
         
         cursor.close()
+        db_pool.putconn(conn)
         return jsonify({'status':'success', 'message': 'Password reset successfully. Failed attempts set to 0.'}), 200
     except Exception as e:
         print(f"{str(e)}")
-        db_conn.rollback()
+        if conn:
+            conn.rollback()
+            db_pool.putconn(conn)
         return jsonify({'status':'fail', 'message': str(e)}), 500
 
 # @app.route('/user-account/unlock', methods=['PUT'])
@@ -119,16 +146,19 @@ def reset_user_account_password():
 
 @app.route('/system/health', methods=['GET'])
 def check_system_health():
-    if db_conn is None:
-        return jsonify({'status':'fail', 'message': 'Database connection failed'}), 500
+    if db_pool is None:
+        return jsonify({'status':'fail', 'message': 'Database connection pool not available'}), 500
     
+    conn = None
     try:
-        cursor = db_conn.cursor()
+        conn = db_pool.getconn()
+        cursor = conn.cursor()
         cursor.execute(
             "SELECT FLOOR(EXTRACT(EPOCH FROM (NOW() - MAX(date_created)))/60)::INTEGER FROM facility_booking"
         )
         result = cursor.fetchone()
         cursor.close()
+        db_pool.putconn(conn)
         
         minutes_since_last_booking = result[0] if result and result[0] is not None else None
         
@@ -141,20 +171,24 @@ def check_system_health():
 
     except Exception as e:
         print(f"{str(e)}")
+        if conn:
+            db_pool.putconn(conn)
         return jsonify({'status':'fail', 'message': str(e)}), 500
 
 @app.route('/booking', methods=['GET'])
 def get_booking():
-    if db_conn is None:
-        return jsonify({'status':'fail', 'message': 'Database connection failed'}), 500
+    if db_pool is None:
+        return jsonify({'status':'fail', 'message': 'Database connection pool not available'}), 500
     
+    conn = None
     try:
+        conn = db_pool.getconn()
         username = request.args.get('username')
         
         if not username:
             return jsonify({'status':'fail', 'message': 'username parameter is required'}), 400
         
-        cursor = db_conn.cursor()
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT id, facility_type, from_date, to_date, username, date_created, date_updated
@@ -166,6 +200,7 @@ def get_booking():
         )
         results = cursor.fetchall()
         cursor.close()
+        db_pool.putconn(conn)
         
         bookings = []
         for row in results:
@@ -186,14 +221,18 @@ def get_booking():
 
     except Exception as e:
         print(f"{str(e)}")
+        if conn:
+            db_pool.putconn(conn)
         return jsonify({'status':'fail', 'message': str(e)}), 500
 
 @app.route('/booking', methods=['POST'])
 def create_booking():
-    if db_conn is None:
-        return jsonify({'status':'fail', 'message': 'Database connection failed'}), 500
+    if db_pool is None:
+        return jsonify({'status':'fail', 'message': 'Database connection pool not available'}), 500
     
+    conn = None
     try:
+        conn = db_pool.getconn()
         data = request.get_json()
         facility_type = data.get('facility_type')
         from_date = data.get('from_date')
@@ -203,7 +242,7 @@ def create_booking():
         if not facility_type or not from_date or not to_date or not username:
             return jsonify({'status':'fail', 'message': 'facility_type, from_date, to_date, and username are required'}), 400
         
-        cursor = db_conn.cursor()
+        cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO facility_booking (facility_type, from_date, to_date, username, date_created)
@@ -213,8 +252,9 @@ def create_booking():
             (facility_type, from_date, to_date, username)
         )
         booking_id = cursor.fetchone()[0]
-        db_conn.commit()
+        conn.commit()
         cursor.close()
+        db_pool.putconn(conn)
         
         return jsonify({
             'status': 'success',
@@ -224,7 +264,9 @@ def create_booking():
 
     except Exception as e:
         print(f"{str(e)}")
-        db_conn.rollback()
+        if conn:
+            conn.rollback()
+            db_pool.putconn(conn)
         return jsonify({'status':'fail', 'message': str(e)}), 500
 
 if __name__ == '__main__':
