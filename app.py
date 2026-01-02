@@ -21,7 +21,7 @@ except Exception as e:
     db_pool = None
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": ["https://facility-frontend.web.app/"]}})
+CORS(app, resources={r"/*": {"origins": ["https://facility-frontend.web.app"]}})
 
 @app.route('/login', methods=['POST'])
 def login_user_account():
