@@ -3,6 +3,11 @@ import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from psycopg2 import pool
+from dotenv import load_dotenv
+
+# Load .env file if it exists (for local development)
+# On Cloud Run, this will be skipped and container env vars will be used
+load_dotenv()
 
 # Initialize connection pool
 # Using smaller pool size to avoid OOM issues on Cloud Run
