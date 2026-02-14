@@ -171,7 +171,8 @@ def check_system_health():
         
         return jsonify({
             'status': 'success',
-            'minutes_since_last_booking': minutes_since_last_booking
+            'minutes_since_last_booking': minutes_since_last_booking,
+            'minutes_since_last_activity': minutes_since_last_booking
         }), 200
 
     except Exception as e:
